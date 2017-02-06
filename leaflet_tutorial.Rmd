@@ -1,0 +1,428 @@
+---
+title: "Leaflet RUM Session"
+author: "Reka Solymosi"
+date: "2/2/2017"
+output: html_document
+---
+
+#Intro
+
+So this is a super brief intro into some of the cool things you can do with leaflet. There are comprehensive tutorials available online, for example [here](https://rstudio.github.io/leaflet/).
+
+You will need to have installed the following packages to follow along:
+
+```{r, eval=FALSE}
+install.packages("leaflet") #for mapping
+
+install.packages("RColorBrewer") #for getting nice colours for your maps
+
+install.packages("rgdal") #for getting data from TfGM API
+install.packages("httr") #for getting data from TfGM API
+install.packages("jsonlite") #for getting data from TfGM API
+```
+
+
+#Making a map
+
+To make a map, just load the leaflet library:
+
+```{r}
+library(leaflet)
+```
+
+You then create a map with this simple bit of code:
+
+```{r}
+m <- leaflet() %>%
+  addTiles()  
+```
+
+And just print it:
+```{r}
+m  
+```
+
+#Adding some content:
+
+You might of course want to add some content to your map. 
+
+#Adding points manuall:
+
+You can add a point manually:
+
+```{r}
+m <- leaflet() %>%
+  addTiles()  %>% 
+  addMarkers(lng=-2.230899, lat=53.464987, popup="You are here")
+m  
+```
+
+Or many points manually:
+
+```{r}
+
+latitudes = c(53.464987, 53.472726, 53.466649) 
+longitudes = c(-2.230899, -2.245481, -2.243421) 
+popups = c("You are here", "Here is another point", "Here is another point") 
+df = data.frame(latitudes, longitudes, popups)      
+
+m <- leaflet(data = df) %>%
+  addTiles()  %>%  
+  addMarkers(lng=~longitudes, lat=~latitudes, popup=~popups)
+m  
+```
+
+#Change the basemap
+
+You can change the background as well. You can find a list of different basemaps [here](http://leaflet-extras.github.io/leaflet-providers/preview/index.html).
+
+```{r}
+m <- leaflet(data = df) %>%
+  addProviderTiles("Stamen.Toner") %>% 
+  addMarkers(lng=~longitudes, lat=~latitudes, popup=~popups)
+m  
+```
+
+
+#Adding data from elsewhere
+
+You will most likely want to add data to your map form external sources, rather than manually creating points. 
+
+For example, I illustrate here with data from [Manchester Open Data](http://open.manchester.gov.uk/) about public toilets: 
+
+```{r}
+publicToilets <- read.csv("http://www.manchester.gov.uk/open/download/downloads/id/171/public_toilets.csv")
+```
+
+Often spatial data will not come with latitude/longitude format, but with easting and northing. Leaflet (as far as I know) prefers lat/long so we might have to convert from BNG to WGS84. 
+
+First thing we might notice is that the coordinates are in Easting and Northing format, rather than Latitude/ Longitude: 
+
+```{r}
+publicToilets[,8:9]
+```
+
+There is a comprehensive step-by-step tutorial on converting coordinates [here](http://www.alex-singleton.com/R-Tutorial-Materials/7-converting-coordinates.pdf). I'll just briefly demo this here.
+
+##Reprojecting coordinates
+
+```{r}
+#the library I'm using here is rgdal
+library(rgdal)
+
+#these are the variables for the coordinate system types
+bng = "+init=epsg:27700"
+latlong = "+init=epsg:4326"
+
+#create coords
+coords <- cbind(Easting = as.numeric(as.character(publicToilets$GeoX)),
+                Northing = as.numeric(as.character(publicToilets$GeoY)))
+
+# create a SpatialPointsDataFrame
+publicToiletsSPDF <- SpatialPointsDataFrame(coords, data = publicToilets, proj4string = CRS(bng))
+
+#reproject with spTransform
+publicToiletsSPDF_latlng <- spTransform(publicToiletsSPDF, CRS(latlong))
+
+#extract coords into a column
+publicToiletsSPDF_latlng@data$lng <- publicToiletsSPDF_latlng@coords[,1]
+publicToiletsSPDF_latlng@data$lat <- publicToiletsSPDF_latlng@coords[,2]
+
+```
+
+Now you should have a reprojected spatial points data frame with latitude and longitude, ready to be mapped: 
+
+```{r}
+m <- leaflet(data = publicToiletsSPDF_latlng@data) %>%
+  addProviderTiles("Stamen.Toner")  %>%  
+  addMarkers(lng=~lng, lat=~lat, popup=~LocationText)
+m  
+```
+
+#Add more meaning to your markers
+
+You can also make your markers tell you something about your data. 
+
+Let's look at a different dataset. 
+
+This one from TfGM (accessed through their API). To use their API, you will have to get your own key. You can then use the code below, by replacing "enter your key here" with your key. To get your own key you simply have to [register with TFGM on their site for developers](https://developer.tfgm.com/). 
+
+```{r, eval=FALSE}
+api_key <- "enter your key here"
+```
+
+```{r, echo=FALSE}
+fileName <- "tfgmKey.txt"
+api_key <-readChar(fileName, file.info(fileName)$size)
+```
+
+Anyway once you have a key, you can get some data about various different transporty things. For example, here we get some information about car parks:
+
+```{r}
+library(httr) #library I use for getting data from API
+library(jsonlite) #library I use for parsing the data into a dataframe
+
+#get the data
+req <- GET("https://api.tfgm.com/odata/Carparks?$expand=Location&$top=500", 
+  add_headers("Ocp-Apim-Subscription-Key" = api_key))
+stop_for_status(req)
+
+#parse the data
+thing <- content(req, as='text')
+thing2 <- fromJSON(thing)
+
+#finally get coordinates to columns from the WKT
+thing2$value$lon <- as.numeric(paste0("-",gsub(".*?([0-9]+[.][0-9]+).*", "\\1", thing2$value$Location$LocationSpatial$Geography$WellKnownText)))
+thing2$value$lat <- as.numeric(gsub(".* ([-]*[0-9]+[.][0-9]+).*", "\\1", thing2$value$Location$LocationSpatial$Geography$WellKnownText))
+
+```
+
+Now we have some live data about car parks! Let's map this! 
+
+##Marker size and colous
+
+We can set the size of the dots to indicate how many free spaces are currently available. We can also colour by a factor, let's say by the 'state' of the carpark. 
+
+```{r}
+library(RColorBrewer) #library for getting nice colours for your maps
+
+#set colour scheme:
+pal <- colorFactor("Paired", thing2$value$State) 
+
+#can build a more complex popup by ysing paste:
+popupText <- paste0("Name:",
+                    thing2$value$Description,
+                    "<br>",
+                    "State: ",
+                    thing2$value$State,
+                    "<br>",
+                    "Capacity: ",
+                    thing2$value$Capacity)
+
+leaflet(thing2$value) %>% 
+  addProviderTiles("Stamen.Toner") %>%
+  addCircleMarkers(
+    lng = ~lon,
+    lat = ~lat,
+    radius = ~Capacity/75, #am making the numbers smaller otherwise we get giant blobs
+    fillColor = ~pal(State),
+    popup = popupText,
+    stroke = 0.01,
+    color = "black",
+    fillOpacity = 1,
+    weight=1
+  ) 
+```
+
+Might also want to add a legend. Can do this with the `addLegend()` function. 
+
+```{r}
+leaflet(thing2$value) %>% 
+  addProviderTiles("Stamen.Toner") %>%
+  addCircleMarkers(
+    lng = ~lon,
+    lat = ~lat,
+    radius = ~Capacity/75, #am making the numbers smaller otherwise we get giant blobs
+    fillColor = ~pal(State),
+    popup = popupText,
+    stroke = 0.01,
+    color = "black",
+    fillOpacity = 1,
+    weight=1
+  ) %>%
+  addLegend("bottomright", pal = pal, values = ~State,
+    title = "State of carpark",
+    opacity = 1)
+```
+
+
+##Cluster the markers
+```{r}
+leaflet(thing2$value) %>% 
+  addProviderTiles("Stamen.Toner") %>%
+  addMarkers(
+    lng = ~lon,
+    lat = ~lat,
+    popup = ~Description,
+    clusterOptions = markerClusterOptions()
+  ) 
+```
+
+#Can also map polygons
+
+Can also easily produce thematic maps with leaflet, or play around with polygons.
+
+You can import a shapefile you might already have on your computer. For example, I have this
+
+```{r}
+fixMyStreet <- readOGR(dsn = "/Users/reka/Desktop/Data", "allDataAtLsoa")
+fixMyStreet <- spTransform(fixMyStreet, CRS("+proj=longlat +datum=WGS84"))
+
+```
+
+```{r}
+#make a fancy popup
+boroughs_popup <- paste0("<strong>LSOA: </strong>",
+                         fixMyStreet@data$LSOA11NM,
+                         "<br><strong>Number of incivility reports: </strong>",
+                         fixMyStreet@data$n_inciv)
+#create colour palette
+# rcolourbrewer gives loads to choose from, here are some examples: 
+
+#DivergingBrBG, PiYG, PRGn, PuOr, RdBu, RdGy, RdYlBu, RdYlGn, Spectral
+
+#QualitativeAccent, Dark2, Paired, Pastel1, Pastel2, Set1, Set2, Set3
+
+#SequentialBlues, BuGn, BuPu, GnBu, Greens, Greys, Oranges, OrRd, PuBu, PuBuGn, PuRd, Purples, RdPu, Reds, YlGn, YlGnBu, YlOrBr, YlOrRd
+
+
+pal <- colorNumeric(
+  palette = "YlOrRd",
+  domain = fixMyStreet@data$n_inciv
+)
+
+#make map
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons( data = fixMyStreet,
+    stroke = TRUE, weight= 1, fillOpacity = 0.8, 
+    color = ~pal(n_inciv), 
+    popup = boroughs_popup
+  ) %>%
+#and add a Legend as well
+  addLegend(pal = pal, 
+            values = fixMyStreet@data$n_inciv,
+            title = "Number of incivility reports",
+            labFormat = labelFormat(suffix = " incivs"),
+            opacity = 0.8
+  )
+
+```
+
+##Mapping from geojson file
+
+Can also map polygons from geojson files from the web. For example, here is a map of population density (number of persons per hectare) at the Output Area Level in Manchester: 
+
+```{r}
+
+geoData <- readLines("https://data.cdrc.ac.uk/dataset/35c1fb9d-df77-4261-9861-14fc75d6f26a/resource/da9e9f72-4d11-46e9-b33a-7a5e24b83d0c/download/cdrc-2013-mid-year-total-population-estimates-geodata-pack-lsoa-manchester-e08000003.geojson", warn = FALSE) %>%
+  paste(collapse = "\n") %>%
+  fromJSON(simplifyVector = FALSE)
+
+value <- sapply(geoData$features, function(feat) {
+  feat$properties$value
+})
+
+pal <- colorQuantile("Greens", value)
+# Add a properties$style list to each feature
+geoData$features <- lapply(geoData$features, function(feat) {
+  feat$properties$style <- list(
+    fillColor = pal(
+      feat$properties$value)
+    #)
+  )
+  feat
+})
+
+# Add the now-styled GeoJSON object to the map
+leaflet() %>% setView(lng = -2.230899, lat=53.464987, zoom = 10) %>%
+  addTiles() %>%
+  addGeoJSON(geoData, weight=1, fillOpacity = 0.8) 
+
+```
+
+#Interactivity with Shiny
+
+It is also possible to make the leaflet maps interactive, by integrating them with Shiny applications. The final dataset for this to experiment with comes from AccStats data for 2015, which can be accessed using the Transport for London API:
+
+```{r, echo=FALSE}
+fileName <- "tflApi.txt"
+queryString <-readChar(fileName, file.info(fileName)$size)
+```
+
+```{r, eval=FALSE}
+l = readLines(queryString, encoding="UTF-8", warn=FALSE)
+
+d = fromJSON(l)
+
+accidents <- data.frame(lapply(as.data.frame(d), as.character), stringsAsFactors=FALSE)
+
+#also make sure data is in date format
+accidents$date2 <- as.Date(accidents$date, "%Y-%m-%d")
+
+```
+
+NOTE: if you're going to be using this code, you will have to make a developer account with TfL to generate your own `app_id` and `app_key` for a query string. 
+OK now with this data we can create an app for looking at the number of accidents with different severity, and adjust the date range (within the year 2015) as we like. 
+
+First load shiny package. 
+```{r}
+library(shiny)
+```
+
+And then create an app, with the leaflet map inside: 
+
+```{r, eval=FALSE}
+
+ui <- fluidPage(
+  titlePanel("Accidents in 2015"),
+
+  sidebarLayout(
+    sidebarPanel( 
+      #date selector goes here 
+      dateRangeInput("Date range", inputId = "date_range",
+        start = "2015-01-01",
+        end = "2015-12-31",
+        format = "yyyy-mm-dd"), 
+      uiOutput('severitySelector',selected = "Fatal")
+      ),
+    mainPanel(
+      #leaflet output goes here
+      leafletOutput("map", height = 800)
+
+    )
+  )
+)
+
+server <- function(input, output) {
+  
+  severityChoices <- sort(unique(as.character(accidents$severity)))
+  
+  #create the drop down menu with name country selector to put in placeholder in UI
+  output$severitySelector <- renderUI({
+	                          	selectInput("severitySelect", label = "Select severity",
+					                    choices = as.list(severityChoices), selected = "Fatal")
+  })
+  #filter data based on dates
+  dateFiltered <- reactive({
+    thing <- accidents %>% filter(date2 %in% seq(input$date_range[1],     input$date_range[2], by = "day") & severity %in% input$severitySelect)
+   
+  })
+  #reactive map
+  output$map <- renderLeaflet({
+    leaflet(accidents) %>%  
+      addProviderTiles("CartoDB.Positron") %>%
+      fitBounds(~min(lon), ~min(lat), ~max(lon), ~max(lat)) %>%
+      addLegend(position = "bottomleft", colors = c("#b10026", "#fd8d3c", "#ffeda0"),
+        labels = c("Fatal", "Serious", "Slight"), opacity = 1, title = "Severity")
+    })
+  
+  observe({
+    pal <- colorFactor(c("#b10026", "#fd8d3c", "#ffeda0"), domain = c("Fatal", "Serious", "Slight"), ordered = TRUE)
+    leafletProxy("map", data = dateFiltered()) %>% clearMarkerClusters() %>%
+      addCircleMarkers(~lon, ~lat,
+        color = "#636363", stroke = TRUE, weight = 1,
+        fillColor = ~pal(severity), fillOpacity = 0.8,
+        radius = 5,
+        popup = ~location, 
+        clusterOptions = markerClusterOptions())
+  })
+  
+  
+}
+
+
+shinyApp(ui = ui, server = server)
+
+```
+
